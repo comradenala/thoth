@@ -5,6 +5,7 @@ pub mod spider;
 
 use crate::checkpoint::{BookRecord, LocalCheckpoint, RemoteCheckpoint, ShardManifest};
 use crate::config::Config;
+use crate::peer::directory::PeerDirectoryStore;
 use crate::peer::registry::ShardRegistry;
 use crate::peer::PeerIdentity;
 use crate::storage;
@@ -29,6 +30,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let downloader = Arc::new(Downloader::new()?);
     let browser = Arc::new(HeadlessBrowser::launch().await?);
     let semaphore = Arc::new(Semaphore::new(cfg.crawler.concurrency));
+    let dir_store = PeerDirectoryStore::new(&*store);
+    if let Err(e) = dir_store.heartbeat(&identity.peer_id, 0).await {
+        warn!("peer directory heartbeat failed at startup: {e}");
+    }
 
     crate::systemd::notify_ready();
 
@@ -38,16 +43,25 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         // Reset quota at UTC midnight
         if total_today >= cfg.crawler.daily_quota {
             let sleep_secs = seconds_until_midnight();
-            info!("Daily quota of {} reached, sleeping {}s until midnight UTC",
-                cfg.crawler.daily_quota, sleep_secs);
+            info!(
+                "Daily quota of {} reached, sleeping {}s until midnight UTC",
+                cfg.crawler.daily_quota, sleep_secs
+            );
             tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
             total_today = 0;
         }
 
         let shards = registry.claim_shards(cfg.crawler.shards_per_peer).await?;
+        let claimed_count = shards.len() as u64;
         if shards.is_empty() {
+            if let Err(e) = dir_store.heartbeat(&identity.peer_id, 0).await {
+                warn!("peer directory heartbeat failed on idle loop: {e}");
+            }
             info!("No unclaimed shards — corpus may be complete");
             break;
+        }
+        if let Err(e) = dir_store.heartbeat(&identity.peer_id, claimed_count).await {
+            warn!("peer directory heartbeat failed after claim: {e}");
         }
 
         for shard in shards {
@@ -59,8 +73,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 .filter(|id| !completed.contains(id))
                 .collect();
 
-            info!("Shard {}: {} books remaining ({} already done)",
-                shard.shard_id, book_ids.len(), completed.len());
+            info!(
+                "Shard {}: {} books remaining ({} already done)",
+                shard.shard_id,
+                book_ids.len(),
+                completed.len()
+            );
 
             let mut handles = Vec::new();
 
@@ -70,7 +88,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 }
 
                 let book_id = *book_id;
-                let url = cfg.crawler.book_url_template.replace("{book}", &book_id.to_string());
+                let url = cfg
+                    .crawler
+                    .book_url_template
+                    .replace("{book}", &book_id.to_string());
                 let shard_id = shard.shard_id;
                 let checkpoint_dir = cfg.crawler.checkpoint_dir.clone();
                 let use_spider = cfg.crawler.use_spider;
@@ -81,7 +102,17 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
                 let handle = tokio::spawn(async move {
                     let _permit = sem.acquire().await?;
-                    crawl_book(book_id, shard_id, &url, use_spider, &browser, &downloader, &store, &checkpoint_dir).await
+                    crawl_book(
+                        book_id,
+                        shard_id,
+                        &url,
+                        use_spider,
+                        &browser,
+                        &downloader,
+                        &store,
+                        &checkpoint_dir,
+                    )
+                    .await
                 });
                 handles.push(handle);
                 total_today += 1;
@@ -98,6 +129,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
             // Heartbeat after processing batch
             registry.heartbeat(shard.shard_id).await?;
+            if let Err(e) = dir_store.heartbeat(&identity.peer_id, claimed_count).await {
+                warn!("peer directory heartbeat failed during shard loop: {e}");
+            }
 
             // Mark shard complete if all books done
             let completed_after = checkpoint.completed_ids()?;
@@ -145,7 +179,8 @@ async fn crawl_book(
     };
 
     // Prefer epub > pdf > anything else
-    let target = targets.iter()
+    let target = targets
+        .iter()
         .find(|d| d.format == "epub")
         .or_else(|| targets.iter().find(|d| d.format == "pdf"))
         .or_else(|| targets.first());
@@ -158,11 +193,13 @@ async fn crawl_book(
     let result = downloader.download(&target.url).await?;
     let s3_key = format!("books/{shard_id}/{book_id:010}.{}", target.format);
 
-    store.put_object(
-        &s3_key,
-        result.data,
-        &format!("application/{}", target.format),
-    ).await?;
+    store
+        .put_object(
+            &s3_key,
+            result.data,
+            &format!("application/{}", target.format),
+        )
+        .await?;
 
     let record = BookRecord {
         book_id,
@@ -177,7 +214,10 @@ async fn crawl_book(
     };
 
     LocalCheckpoint::new(checkpoint_dir, shard_id).append(&record)?;
-    info!("book {book_id} archived ({} bytes, {})", result.size_bytes, target.format);
+    info!(
+        "book {book_id} archived ({} bytes, {})",
+        result.size_bytes, target.format
+    );
     Ok(())
 }
 

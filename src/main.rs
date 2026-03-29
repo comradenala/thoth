@@ -1,11 +1,12 @@
-mod config;
-mod storage;
-mod peer;
 mod checkpoint;
+mod config;
 mod crawler;
-mod systemd;
-mod package;
+mod init;
 mod invite;
+mod package;
+mod peer;
+mod storage;
+mod systemd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -21,6 +22,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize this machine for Thoth (identity + directories)
+    Init,
     /// Start the crawler daemon
     Crawl,
     /// Show peer status and shard claims
@@ -32,10 +35,18 @@ enum Commands {
         #[arg(long, default_value_t = 512)]
         chunk_mib: u64,
     },
-    /// Generate a config snippet + scoped credentials for a new peer to join
+    /// Create a short invite code for peer onboarding
     Invite {
         #[arg(long, default_value_t = 24)]
         expiry_hours: u32,
+    },
+    /// Join a cluster using a shortcode created by `thoth invite`
+    Join {
+        shortcode: String,
+        #[arg(short, long, default_value = "joined.toml")]
+        output: PathBuf,
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -49,14 +60,18 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::load(&cli.config)?;
 
     match cli.command {
+        Commands::Init => init::run_init(&cfg).await?,
         Commands::Crawl => crawler::run(cfg).await?,
         Commands::Status => peer::print_status(&cfg).await?,
         Commands::Package { output, chunk_mib } => {
             package::run(cfg, output, chunk_mib * 1024 * 1024).await?
         }
-        Commands::Invite { expiry_hours } => {
-            invite::run_invite(&cfg, expiry_hours).await?
-        }
+        Commands::Invite { expiry_hours } => invite::run_invite(&cfg, expiry_hours).await?,
+        Commands::Join {
+            shortcode,
+            output,
+            force,
+        } => invite::run_join(&cfg, &shortcode, &output, force).await?,
     }
     Ok(())
 }

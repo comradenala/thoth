@@ -18,11 +18,12 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"], default-features = false }
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json", "multipart"], default-features = false }
 aws-sdk-s3 = "1"
 aws-sdk-sts = "1"
 aws-config = "1"
 sha2 = "0.10"
+sha1 = "0.10"
 hex = "0.4"
 zstd = "0.13"
 chromiumoxide = { version = "0.6", features = ["tokio-runtime"], optional = true }

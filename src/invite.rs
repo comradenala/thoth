@@ -1,12 +1,97 @@
 use crate::config::Config;
+use crate::peer::PeerIdentity;
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+const INVITES_PREFIX: &str = "peers/invites/";
+const SHORTCODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopedCredentials {
     pub access_key_id: String,
     pub secret_access_key: String,
     pub session_token: Option<String>,
     pub expires_at: Option<String>,
     pub backend: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteRecord {
+    pub code: String,
+    pub created_by_peer_id: String,
+    pub created_at_unix: u64,
+    pub expires_at_unix: u64,
+    pub redeemed_by_peer_id: Option<String>,
+    pub redeemed_at_unix: Option<u64>,
+    pub config_snippet: String,
+    pub credentials: Option<ScopedCredentials>,
+}
+
+impl InviteRecord {
+    pub fn key(code: &str) -> String {
+        format!("{INVITES_PREFIX}{}.json", normalize_code(code))
+    }
+
+    pub fn state(&self, now_unix: u64) -> &'static str {
+        if self.redeemed_by_peer_id.is_some() {
+            "redeemed"
+        } else if now_unix > self.expires_at_unix {
+            "expired"
+        } else {
+            "active"
+        }
+    }
+}
+
+pub fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn normalize_code(code: &str) -> String {
+    code.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+fn format_code(code: &str) -> String {
+    let code = normalize_code(code);
+    if code.len() <= 4 {
+        return code;
+    }
+    let split = code.len() / 2;
+    format!("{}-{}", &code[..split], &code[split..])
+}
+
+fn generate_shortcode() -> String {
+    let mut value = uuid::Uuid::new_v4().as_u128();
+    let mut chars = ['A'; 8];
+    for idx in (0..8).rev() {
+        let n = (value % SHORTCODE_ALPHABET.len() as u128) as usize;
+        chars[idx] = SHORTCODE_ALPHABET[n] as char;
+        value /= SHORTCODE_ALPHABET.len() as u128;
+    }
+    format!(
+        "{}{}{}{}-{}{}{}{}",
+        chars[0], chars[1], chars[2], chars[3], chars[4], chars[5], chars[6], chars[7]
+    )
+}
+
+fn render_join_config(cfg: &Config, snippet: &str) -> String {
+    let mut out = String::new();
+    out.push_str("[peer]\n");
+    out.push_str(&format!("identity_path = {:?}\n\n", cfg.peer.identity_path));
+    out.push_str(snippet);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Generate a shareable TOML snippet for peers. Local-only paths are omitted.
@@ -40,11 +125,12 @@ pub fn generate_config_snippet(cfg: &Config) -> String {
         cfg.crawler.shards_per_peer
     ));
     out.push_str(&format!("concurrency = {}\n", cfg.crawler.concurrency));
-    out.push_str(&format!("claim_ttl_secs = {}\n", cfg.crawler.claim_ttl_secs));
+    out.push_str(&format!(
+        "claim_ttl_secs = {}\n",
+        cfg.crawler.claim_ttl_secs
+    ));
     out.push_str(&format!("use_spider = {}\n", cfg.crawler.use_spider));
-    out.push_str(
-        "checkpoint_dir = \"/var/lib/thoth/checkpoints\"  # change per peer host\n",
-    );
+    out.push_str("checkpoint_dir = \"/var/lib/thoth/checkpoints\"  # change per peer host\n");
 
     out.push('\n');
     out.push_str("[package]\n");
@@ -143,14 +229,12 @@ pub async fn try_r2_credentials(
     };
 
     let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.cloudflare.com/client/v4/accounts/{account_id}/r2/tokens"
-    );
+    let url = format!("https://api.cloudflare.com/client/v4/accounts/{account_id}/r2/tokens");
 
     let ttl = expiry_hours.saturating_mul(3600);
     let resource = format!("com.cloudflare.edge.r2.bucket.{account_id}_default_{bucket}");
     let body = serde_json::json!({
-        "name": format!("thoth-peer-invite-{}", now_unix_str()),
+        "name": format!("thoth-peer-invite-{}", now_unix()),
         "policies": [{
             "effect": "allow",
             "resources": { resource: "*" },
@@ -175,13 +259,13 @@ pub async fn try_r2_credentials(
         return Err(anyhow::anyhow!("CF API error {status}: {text}"));
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(Deserialize)]
     struct CfTokenResult {
         id: String,
         value: String,
     }
 
-    #[derive(serde::Deserialize)]
+    #[derive(Deserialize)]
     struct CfResponse {
         result: CfTokenResult,
     }
@@ -197,30 +281,147 @@ pub async fn try_r2_credentials(
     }))
 }
 
-fn now_unix_str() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+async fn create_invite_record(cfg: &Config, expiry_hours: u32) -> anyhow::Result<InviteRecord> {
+    let identity = PeerIdentity::load_or_create(&cfg.peer.identity_path)?;
+    let store = crate::storage::from_config(&cfg.storage).await?;
+    let code = loop {
+        let candidate = generate_shortcode();
+        if store
+            .get_object(&InviteRecord::key(&candidate))
+            .await?
+            .is_none()
+        {
+            break candidate;
+        }
+    };
+    let created_at_unix = now_unix();
+    let expires_at_unix =
+        created_at_unix.saturating_add((expiry_hours as u64).saturating_mul(3600));
 
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .to_string()
+    let credentials =
+        if let Some(c) = try_sts_credentials(&cfg.storage.bucket, expiry_hours).await? {
+            Some(c)
+        } else {
+            try_r2_credentials(&cfg.storage.bucket, expiry_hours).await?
+        };
+
+    let invite = InviteRecord {
+        code: format_code(&code),
+        created_by_peer_id: identity.peer_id,
+        created_at_unix,
+        expires_at_unix,
+        redeemed_by_peer_id: None,
+        redeemed_at_unix: None,
+        config_snippet: generate_config_snippet(cfg),
+        credentials,
+    };
+
+    let key = InviteRecord::key(&invite.code);
+    let data = Bytes::from(serde_json::to_vec_pretty(&invite)?);
+    store.put_object(&key, data, "application/json").await?;
+    Ok(invite)
+}
+
+pub async fn list_invites(cfg: &Config) -> anyhow::Result<Vec<InviteRecord>> {
+    let store = crate::storage::from_config(&cfg.storage).await?;
+    let keys = store.list_keys(INVITES_PREFIX).await?;
+    let mut invites = Vec::new();
+    for key in keys {
+        let Some(raw) = store.get_object(&key).await? else {
+            continue;
+        };
+        if let Ok(invite) = serde_json::from_slice::<InviteRecord>(&raw) {
+            invites.push(invite);
+        }
+    }
+    invites.sort_by(|a, b| b.created_at_unix.cmp(&a.created_at_unix));
+    Ok(invites)
+}
+
+async fn load_invite(cfg: &Config, code: &str) -> anyhow::Result<Option<InviteRecord>> {
+    let store = crate::storage::from_config(&cfg.storage).await?;
+    let key = InviteRecord::key(code);
+    let Some(raw) = store.get_object(&key).await? else {
+        return Ok(None);
+    };
+    let invite = serde_json::from_slice::<InviteRecord>(&raw)?;
+    Ok(Some(invite))
+}
+
+async fn persist_invite(cfg: &Config, invite: &InviteRecord) -> anyhow::Result<()> {
+    let store = crate::storage::from_config(&cfg.storage).await?;
+    let key = InviteRecord::key(&invite.code);
+    let data = Bytes::from(serde_json::to_vec_pretty(invite)?);
+    store.put_object(&key, data, "application/json").await
 }
 
 pub async fn run_invite(cfg: &Config, expiry_hours: u32) -> anyhow::Result<()> {
-    println!("=== Thoth Peer Invite ===");
+    let invite = create_invite_record(cfg, expiry_hours).await?;
+
+    println!("=== Thoth Invite Created ===");
+    println!("Shortcode: {}", invite.code);
+    println!("Expires:   {}", invite.expires_at_unix);
     println!();
-    println!("-- config.toml snippet (share this) --------------------------------");
-    println!("{}", generate_config_snippet(cfg));
+    println!("On the peer machine:");
+    println!("1. Copy config.toml with matching [storage] + [peer] paths.");
+    println!("2. Run: thoth --config config.toml join {}", invite.code);
+    println!("3. Start worker: thoth --config joined.toml crawl");
+    println!();
+    if invite.credentials.is_none() {
+        println!("# Note: no scoped credentials could be minted automatically.");
+        println!("# The joining peer will need credentials from your environment/backend.");
+    }
 
-    let creds = if let Some(c) = try_sts_credentials(&cfg.storage.bucket, expiry_hours).await? {
-        Some(c)
-    } else {
-        try_r2_credentials(&cfg.storage.bucket, expiry_hours).await?
-    };
+    Ok(())
+}
 
-    if let Some(creds) = creds {
-        println!("-- credentials (scoped, expires in {expiry_hours}h) -----------------");
+pub async fn run_join(
+    cfg: &Config,
+    shortcode: &str,
+    output: &Path,
+    force: bool,
+) -> anyhow::Result<()> {
+    let mut invite = load_invite(cfg, shortcode)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("invite code not found: {}", format_code(shortcode)))?;
+
+    let now = now_unix();
+    if now > invite.expires_at_unix {
+        return Err(anyhow::anyhow!("invite {} is expired", invite.code));
+    }
+    if invite.redeemed_by_peer_id.is_some() {
+        return Err(anyhow::anyhow!(
+            "invite {} has already been redeemed",
+            invite.code
+        ));
+    }
+
+    if output.exists() && !force {
+        return Err(anyhow::anyhow!(
+            "output config already exists: {} (use --force to overwrite)",
+            output.display()
+        ));
+    }
+
+    let identity = PeerIdentity::load_or_create(&cfg.peer.identity_path)?;
+    invite.redeemed_by_peer_id = Some(identity.peer_id.clone());
+    invite.redeemed_at_unix = Some(now);
+
+    // Best-effort persistence. If this fails, still provide local bootstrap material.
+    let _ = persist_invite(cfg, &invite).await;
+
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let config_toml = render_join_config(cfg, &invite.config_snippet);
+    std::fs::write(output, config_toml)?;
+
+    println!("=== Thoth Join Complete ===");
+    println!("Peer ID: {}", identity.peer_id);
+    println!("Config:  {}", output.display());
+    if let Some(creds) = &invite.credentials {
+        println!();
+        println!("Export these credentials before running crawl:");
         println!("export AWS_ACCESS_KEY_ID={}", creds.access_key_id);
         println!("export AWS_SECRET_ACCESS_KEY={}", creds.secret_access_key);
         if let Some(token) = &creds.session_token {
@@ -229,23 +430,13 @@ pub async fn run_invite(cfg: &Config, expiry_hours: u32) -> anyhow::Result<()> {
         if let Some(exp) = &creds.expires_at {
             println!("# Expires: {exp}");
         }
-        println!("# Backend: {}", creds.backend);
     } else {
-        println!("-- credentials -------------------------------------------------------");
-        println!("# No credential backend detected.");
-        println!("# Share AWS credentials or R2 API credentials manually.");
-        println!(
-            "# Scope AWS/R2 permissions to bucket '{}' read/write/list operations.",
-            cfg.storage.bucket
-        );
+        println!();
+        println!("# Invite does not contain scoped credentials.");
+        println!("# Ensure storage credentials are available in your environment.");
     }
-
     println!();
-    println!("-- instructions for new peer ----------------------------------------");
-    println!("1. Install thoth binary on the new host.");
-    println!("2. Save the config snippet to config.toml.");
-    println!("3. Set credentials via environment variables.");
-    println!("4. Run: thoth --config config.toml crawl");
+    println!("Next: thoth --config {} crawl", output.display());
     Ok(())
 }
 
@@ -300,5 +491,29 @@ mod tests {
             !snippet.contains("identity_path"),
             "should not include identity_path (peer-local): {snippet}"
         );
+    }
+
+    #[test]
+    fn test_shortcode_shape() {
+        let code = generate_shortcode();
+        assert_eq!(code.len(), 9);
+        assert_eq!(code.as_bytes()[4], b'-');
+        assert!(code.chars().all(|c| c == '-' || c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn test_invite_state() {
+        let rec = InviteRecord {
+            code: "ABCD-1234".into(),
+            created_by_peer_id: "p1".into(),
+            created_at_unix: 100,
+            expires_at_unix: 200,
+            redeemed_by_peer_id: None,
+            redeemed_at_unix: None,
+            config_snippet: String::new(),
+            credentials: None,
+        };
+        assert_eq!(rec.state(150), "active");
+        assert_eq!(rec.state(201), "expired");
     }
 }

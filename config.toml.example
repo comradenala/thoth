@@ -3,7 +3,7 @@ identity_path = "/var/lib/thoth/peer_id"
 
 [storage]
 bucket = "open-books-archive"
-endpoint_url = "https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com"
+endpoint_url = "https://99ccacd45bc5e29b03b4a6c140ed37a7.r2.cloudflarestorage.com"
 shard_size = 10000
 total_books = 40000000
 multipart_threshold_bytes = 104857600
@@ -16,8 +16,9 @@ shards_per_peer = 2
 concurrency = 4
 claim_ttl_secs = 3600
 checkpoint_dir = "/var/lib/thoth/checkpoints"
-use_spider = false
+use_spider = true
 
+# Optional: only needed to enable torrent/IPFS publishing for `thoth package`.
 [package]
 generate_torrent = false
 tracker_url = "udp://tracker.opentrackr.org:1337/announce"
