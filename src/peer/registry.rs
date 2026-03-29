@@ -40,7 +40,13 @@ impl<'a> ShardRegistry<'a> {
         total_books: u64,
         claim_ttl_secs: u64,
     ) -> Self {
-        Self { store, peer_id, shard_size, total_books, claim_ttl_secs }
+        Self {
+            store,
+            peer_id,
+            shard_size,
+            total_books,
+            claim_ttl_secs,
+        }
     }
 
     /// Claim up to `n` unclaimed (or stale) shards. Returns claimed ShardRanges.
@@ -98,7 +104,9 @@ impl<'a> ShardRegistry<'a> {
             if record.peer_id == self.peer_id {
                 record.last_heartbeat_unix = ClaimRecord::now_unix();
                 let data = bytes::Bytes::from(serde_json::to_vec(&record)?);
-                self.store.put_object(&key, data, "application/json").await?;
+                self.store
+                    .put_object(&key, data, "application/json")
+                    .await?;
             }
         }
         Ok(())

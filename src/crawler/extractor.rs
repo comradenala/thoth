@@ -9,7 +9,7 @@ pub struct PageMetadata {
 #[derive(Debug, Clone)]
 pub struct DownloadTarget {
     pub url: String,
-    pub format: String,  // "pdf" | "epub" | "html"
+    pub format: String, // "pdf" | "epub" | "html"
 }
 
 /// Extract metadata and download links from rendered HTML.
@@ -26,11 +26,18 @@ pub fn extract_metadata(html: &str, base_url: &str) -> PageMetadata {
     for (suffix, fmt) in [(".epub", "epub"), (".pdf", "pdf")] {
         for href in find_hrefs_with_suffix(html, suffix) {
             let url = resolve_url(base_url, &href);
-            downloads.push(DownloadTarget { url, format: fmt.to_string() });
+            downloads.push(DownloadTarget {
+                url,
+                format: fmt.to_string(),
+            });
         }
     }
 
-    PageMetadata { title, author, downloads }
+    PageMetadata {
+        title,
+        author,
+        downloads,
+    }
 }
 
 fn extract_meta_content(html: &str, name: &str) -> Option<String> {

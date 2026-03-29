@@ -26,7 +26,10 @@ async fn test_put_and_get_small() {
 async fn test_get_missing_returns_none() {
     let Some(b) = bucket() else { return };
     let s = store(&b).await;
-    let result = s.get_object("test/definitely_does_not_exist_xyz").await.unwrap();
+    let result = s
+        .get_object("test/definitely_does_not_exist_xyz")
+        .await
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -36,8 +39,14 @@ async fn test_put_if_absent() {
     let s = store(&b).await;
     let key = "test/put_if_absent";
     let _ = s.delete_object(key).await;
-    let first = s.put_if_absent(key, Bytes::from_static(b"first")).await.unwrap();
-    let second = s.put_if_absent(key, Bytes::from_static(b"second")).await.unwrap();
+    let first = s
+        .put_if_absent(key, Bytes::from_static(b"first"))
+        .await
+        .unwrap();
+    let second = s
+        .put_if_absent(key, Bytes::from_static(b"second"))
+        .await
+        .unwrap();
     assert!(first);
     assert!(!second);
     let val = s.get_object(key).await.unwrap().unwrap();

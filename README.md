@@ -89,6 +89,9 @@ cp config.toml.example config.toml
 - `[storage].endpoint_url`: set for S3-compatible backends (required for R2/MinIO).
 - `[crawler].book_url_template`: must contain `{book}` placeholder.
 - `[crawler].checkpoint_dir`: local directory for shard checkpoint files.
+- `[catalog].enabled`: set to `true` to crawl IDs from catalog shards in object storage.
+- `[catalog].manifest_key`: object key for catalog manifest JSON.
+- `[catalog].shard_prefix`: object prefix containing `shard-XXXXXXXXXX.ndjson` files.
 
 3. Set storage credentials in your environment.
 
@@ -121,6 +124,30 @@ Start crawling:
 ```bash
 RUST_LOG=info cargo run -- --config config.toml crawl
 ```
+
+## Catalog Mode (R2-Hosted ID Frontier)
+
+Use this when crawling from a prebuilt ID catalog (for example AA `gbooks_records`) instead of numeric `total_books` ranges.
+
+1. Build/upload catalog shards to your bucket:
+
+```bash
+scripts/upload_catalog_to_r2.sh \
+  --input /path/to/annas_archive_meta__aacid__gbooks_records__*.jsonl.seekable.zst \
+  --bucket open-books-archive \
+  --prefix catalog/gbooks
+```
+
+2. Enable `[catalog]` in `config.toml`:
+
+```toml
+[catalog]
+enabled = true
+manifest_key = "catalog/gbooks/manifest.json"
+shard_prefix = "catalog/gbooks/shards"
+```
+
+In catalog mode, peers claim by catalog shard ID and crawl IDs from shard files.
 
 ## Invite and Join (Multi-Peer)
 
@@ -200,6 +227,8 @@ Object storage keys used by `thoth`:
 - `peers/directory/{peer_id}.json`
 - `peers/invites/{invite_code}.json`
 - `manifests/shards/shard-XXXXXXXXXX.json`
+- `catalog/gbooks/manifest.json` (when catalog mode is enabled)
+- `catalog/gbooks/shards/shard-XXXXXXXXXX.ndjson` (when catalog mode is enabled)
 
 Local checkpoint files:
 

@@ -3,6 +3,7 @@ pub mod downloader;
 pub mod extractor;
 pub mod spider;
 
+use crate::catalog::{load_shard_records, CatalogManifest};
 use crate::checkpoint::{BookRecord, LocalCheckpoint, RemoteCheckpoint, ShardManifest};
 use crate::config::Config;
 use crate::peer::directory::PeerDirectoryStore;
@@ -17,14 +18,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone)]
+struct PendingBook {
+    book_id: u64,
+    source_id: Option<String>,
+    token: String,
+}
+
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let identity = PeerIdentity::load_or_create(&cfg.peer.identity_path)?;
     let store = Arc::new(storage::from_config(&cfg.storage).await?);
+    let (registry_shard_size, registry_total_books) = if cfg.catalog.enabled {
+        let manifest = CatalogManifest::load(&store, &cfg.catalog.manifest_key).await?;
+        info!(
+            "Catalog mode enabled: {} records in {} shards (manifest: {})",
+            manifest.total_records, manifest.total_shards, cfg.catalog.manifest_key
+        );
+        (1, manifest.total_shards)
+    } else {
+        (cfg.storage.shard_size, cfg.storage.total_books)
+    };
     let registry = ShardRegistry::new(
         &*store,
         &identity.peer_id,
-        cfg.storage.shard_size,
-        cfg.storage.total_books,
+        registry_shard_size,
+        registry_total_books,
         cfg.crawler.claim_ttl_secs,
     );
     let downloader = Arc::new(Downloader::new()?);
@@ -68,30 +86,32 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let checkpoint = LocalCheckpoint::new(&cfg.crawler.checkpoint_dir, shard.shard_id);
             let completed = checkpoint.completed_ids()?;
             let remote_cp = RemoteCheckpoint::new(&*store);
-
-            let book_ids: Vec<u64> = (shard.start_book_id..shard.end_book_id)
-                .filter(|id| !completed.contains(id))
-                .collect();
+            let (books, shard_total) = pending_books_for_shard(&cfg, &store, &shard, &completed)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to build shard {} book list: {e}", shard.shard_id)
+                })?;
 
             info!(
                 "Shard {}: {} books remaining ({} already done)",
                 shard.shard_id,
-                book_ids.len(),
+                books.len(),
                 completed.len()
             );
 
             let mut handles = Vec::new();
 
-            for book_id in &book_ids {
+            for pending in &books {
                 if total_today >= cfg.crawler.daily_quota {
                     break;
                 }
 
-                let book_id = *book_id;
+                let book_id = pending.book_id;
+                let source_id = pending.source_id.clone();
                 let url = cfg
                     .crawler
                     .book_url_template
-                    .replace("{book}", &book_id.to_string());
+                    .replace("{book}", &pending.token);
                 let shard_id = shard.shard_id;
                 let checkpoint_dir = cfg.crawler.checkpoint_dir.clone();
                 let use_spider = cfg.crawler.use_spider;
@@ -104,6 +124,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     let _permit = sem.acquire().await?;
                     crawl_book(
                         book_id,
+                        source_id,
                         shard_id,
                         &url,
                         use_spider,
@@ -135,7 +156,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
             // Mark shard complete if all books done
             let completed_after = checkpoint.completed_ids()?;
-            let shard_total = shard.end_book_id - shard.start_book_id;
             if completed_after.len() as u64 >= shard_total {
                 let manifest = ShardManifest {
                     shard_id: shard.shard_id,
@@ -157,6 +177,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
 async fn crawl_book(
     book_id: u64,
+    source_id: Option<String>,
     shard_id: u64,
     url: &str,
     use_spider: bool,
@@ -186,6 +207,19 @@ async fn crawl_book(
         .or_else(|| targets.first());
 
     let Some(target) = target else {
+        let record = BookRecord {
+            book_id,
+            source_id,
+            shard_id,
+            title: meta.title,
+            author: meta.author,
+            format: "unavailable".to_string(),
+            s3_key: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            crawled_at_unix: now_unix(),
+        };
+        LocalCheckpoint::new(checkpoint_dir, shard_id).append(&record)?;
         warn!("book {book_id}: no downloadable format at {url}");
         return Ok(());
     };
@@ -203,6 +237,7 @@ async fn crawl_book(
 
     let record = BookRecord {
         book_id,
+        source_id,
         shard_id,
         title: meta.title,
         author: meta.author,
@@ -219,6 +254,38 @@ async fn crawl_book(
         result.size_bytes, target.format
     );
     Ok(())
+}
+
+async fn pending_books_for_shard(
+    cfg: &Config,
+    store: &storage::S3Store,
+    shard: &crate::peer::shard::ShardRange,
+    completed: &std::collections::HashSet<u64>,
+) -> anyhow::Result<(Vec<PendingBook>, u64)> {
+    if cfg.catalog.enabled {
+        let records = load_shard_records(store, &cfg.catalog.shard_prefix, shard.shard_id).await?;
+        let shard_total = records.len() as u64;
+        let books = records
+            .into_iter()
+            .filter(|r| !completed.contains(&r.book_id))
+            .map(|r| PendingBook {
+                book_id: r.book_id,
+                token: r.source_id.clone(),
+                source_id: Some(r.source_id),
+            })
+            .collect();
+        Ok((books, shard_total))
+    } else {
+        let books: Vec<PendingBook> = (shard.start_book_id..shard.end_book_id)
+            .filter(|id| !completed.contains(id))
+            .map(|book_id| PendingBook {
+                book_id,
+                token: book_id.to_string(),
+                source_id: None,
+            })
+            .collect();
+        Ok((books, shard.end_book_id - shard.start_book_id))
+    }
 }
 
 fn seconds_until_midnight() -> u64 {

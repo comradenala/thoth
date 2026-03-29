@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::peer::directory::PeerDirectoryStore;
 use crate::peer::PeerIdentity;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -131,6 +132,12 @@ pub fn generate_config_snippet(cfg: &Config) -> String {
     ));
     out.push_str(&format!("use_spider = {}\n", cfg.crawler.use_spider));
     out.push_str("checkpoint_dir = \"/var/lib/thoth/checkpoints\"  # change per peer host\n");
+
+    out.push('\n');
+    out.push_str("[catalog]\n");
+    out.push_str(&format!("enabled = {}\n", cfg.catalog.enabled));
+    out.push_str(&format!("manifest_key = {:?}\n", cfg.catalog.manifest_key));
+    out.push_str(&format!("shard_prefix = {:?}\n", cfg.catalog.shard_prefix));
 
     out.push('\n');
     out.push_str("[package]\n");
@@ -409,6 +416,13 @@ pub async fn run_join(
 
     // Best-effort persistence. If this fails, still provide local bootstrap material.
     let _ = persist_invite(cfg, &invite).await;
+    // Best-effort directory registration so `thoth status` can see this node immediately.
+    if let Ok(store) = crate::storage::from_config(&cfg.storage).await {
+        let dir_store = PeerDirectoryStore::new(&store);
+        if let Err(err) = dir_store.heartbeat(&identity.peer_id, 0).await {
+            eprintln!("warning: peer directory heartbeat failed during join: {err}");
+        }
+    }
 
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
@@ -443,7 +457,9 @@ pub async fn run_join(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, CrawlerConfig, PackageConfig, PeerConfig, StorageConfig};
+    use crate::config::{
+        CatalogConfig, Config, CrawlerConfig, PackageConfig, PeerConfig, StorageConfig,
+    };
     use std::path::PathBuf;
 
     fn sample_config() -> Config {
@@ -468,6 +484,7 @@ mod tests {
                 checkpoint_dir: PathBuf::from("/var/lib/thoth/checkpoints"),
                 use_spider: false,
             },
+            catalog: CatalogConfig::default(),
             package: PackageConfig::default(),
         }
     }

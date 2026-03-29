@@ -28,7 +28,9 @@ pub mod inner {
                 }
             });
 
-            Ok(Self { browser: Arc::new(Mutex::new(browser)) })
+            Ok(Self {
+                browser: Arc::new(Mutex::new(browser)),
+            })
         }
 
         pub async fn fetch_html(&self, url: &str) -> anyhow::Result<String> {

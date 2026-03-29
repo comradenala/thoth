@@ -21,7 +21,11 @@ pub fn shard_for_book_id(book_id: u64, shard_size: u64) -> u64 {
 pub fn shard_range(shard_id: u64, shard_size: u64, total_books: u64) -> ShardRange {
     let start = shard_id * shard_size;
     let end = ((shard_id + 1) * shard_size).min(total_books);
-    ShardRange { shard_id, start_book_id: start, end_book_id: end }
+    ShardRange {
+        shard_id,
+        start_book_id: start,
+        end_book_id: end,
+    }
 }
 
 pub fn total_shards(shard_size: u64, total_books: u64) -> u64 {

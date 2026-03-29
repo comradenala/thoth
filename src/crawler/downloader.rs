@@ -50,6 +50,11 @@ impl Downloader {
         let sha256 = hex::encode(hasher.finalize());
         let size_bytes = data.len() as u64;
 
-        Ok(DownloadResult { data, sha256, content_type, size_bytes })
+        Ok(DownloadResult {
+            data,
+            sha256,
+            content_type,
+            size_bytes,
+        })
     }
 }

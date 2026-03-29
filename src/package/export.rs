@@ -52,6 +52,7 @@ mod tests {
     fn sample(book_id: u64, shard_id: u64) -> BookRecord {
         BookRecord {
             book_id,
+            source_id: None,
             shard_id,
             title: format!("Book {book_id}"),
             author: "Author".into(),

@@ -18,6 +18,11 @@ claim_ttl_secs = 3600
 checkpoint_dir = "/var/lib/thoth/checkpoints"
 use_spider = true
 
+[catalog]
+enabled = false
+manifest_key = "catalog/gbooks/manifest.json"
+shard_prefix = "catalog/gbooks/shards"
+
 # Optional: only needed to enable torrent/IPFS publishing for `thoth package`.
 [package]
 generate_torrent = false

@@ -7,9 +7,7 @@ pub async fn discover_download_links(url: &str) -> anyhow::Result<Vec<DownloadTa
     use spider::website::Website;
 
     let mut website = Website::new(url);
-    website
-        .with_limit(1)
-        .with_depth(1);
+    website.with_limit(1).with_depth(1);
     website.scrape().await;
 
     let pages = website.get_pages();

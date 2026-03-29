@@ -101,6 +101,7 @@ mod tests {
     fn make_record(id: u64) -> BookRecord {
         BookRecord {
             book_id: id,
+            source_id: None,
             shard_id: 0,
             title: format!("Book {id}"),
             author: "A".into(),

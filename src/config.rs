@@ -7,6 +7,8 @@ pub struct Config {
     pub storage: StorageConfig,
     pub crawler: CrawlerConfig,
     #[serde(default)]
+    pub catalog: CatalogConfig,
+    #[serde(default)]
     pub package: PackageConfig,
 }
 
@@ -46,6 +48,26 @@ pub struct CrawlerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CatalogConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_catalog_manifest_key")]
+    pub manifest_key: String,
+    #[serde(default = "default_catalog_shard_prefix")]
+    pub shard_prefix: String,
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            manifest_key: default_catalog_manifest_key(),
+            shard_prefix: default_catalog_shard_prefix(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PackageConfig {
     #[serde(default)]
     pub generate_torrent: bool,
@@ -67,22 +89,46 @@ impl Default for PackageConfig {
     }
 }
 
-fn default_shard_size() -> u64 { 10_000 }
-fn default_total_books() -> u64 { 40_000_000 }
-fn default_multipart_threshold() -> u64 { 100 * 1024 * 1024 }
-fn default_part_size() -> u64 { 10 * 1024 * 1024 }
-fn default_daily_quota() -> u64 { 100_000 }
-fn default_shards_per_peer() -> u64 { 2 }
-fn default_concurrency() -> usize { 4 }
-fn default_claim_ttl() -> u64 { 3600 }
-fn default_ipfs_api() -> String { "http://127.0.0.1:5001".to_string() }
+fn default_shard_size() -> u64 {
+    10_000
+}
+fn default_total_books() -> u64 {
+    40_000_000
+}
+fn default_multipart_threshold() -> u64 {
+    100 * 1024 * 1024
+}
+fn default_part_size() -> u64 {
+    10 * 1024 * 1024
+}
+fn default_daily_quota() -> u64 {
+    100_000
+}
+fn default_shards_per_peer() -> u64 {
+    2
+}
+fn default_concurrency() -> usize {
+    4
+}
+fn default_claim_ttl() -> u64 {
+    3600
+}
+fn default_catalog_manifest_key() -> String {
+    "catalog/gbooks/manifest.json".to_string()
+}
+fn default_catalog_shard_prefix() -> String {
+    "catalog/gbooks/shards".to_string()
+}
+fn default_ipfs_api() -> String {
+    "http://127.0.0.1:5001".to_string()
+}
 
 impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("cannot read config {}: {e}", path.display()))?;
-        let config: Config = toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
+        let config: Config =
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
         Ok(config)
     }
 }

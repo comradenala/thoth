@@ -1,9 +1,5 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::{
-    config::Builder as S3ConfigBuilder,
-    primitives::ByteStream,
-    Client,
-};
+use aws_sdk_s3::{config::Builder as S3ConfigBuilder, primitives::ByteStream, Client};
 use bytes::Bytes;
 
 pub struct S3Store {
@@ -26,11 +22,21 @@ impl S3Store {
             builder = builder.endpoint_url(url).force_path_style(true);
         }
         let client = Client::from_conf(builder.build());
-        Ok(Self { client, bucket: bucket.into(), multipart_threshold, part_size })
+        Ok(Self {
+            client,
+            bucket: bucket.into(),
+            multipart_threshold,
+            part_size,
+        })
     }
 
     /// Upload bytes — streaming for small, multipart for large.
-    pub async fn put_object(&self, key: &str, data: Bytes, content_type: &str) -> anyhow::Result<()> {
+    pub async fn put_object(
+        &self,
+        key: &str,
+        data: Bytes,
+        content_type: &str,
+    ) -> anyhow::Result<()> {
         if data.len() as u64 >= self.multipart_threshold {
             self.multipart_upload(key, data, content_type).await
         } else {
@@ -38,7 +44,12 @@ impl S3Store {
         }
     }
 
-    async fn streaming_upload(&self, key: &str, data: Bytes, content_type: &str) -> anyhow::Result<()> {
+    async fn streaming_upload(
+        &self,
+        key: &str,
+        data: Bytes,
+        content_type: &str,
+    ) -> anyhow::Result<()> {
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -51,10 +62,16 @@ impl S3Store {
         Ok(())
     }
 
-    async fn multipart_upload(&self, key: &str, data: Bytes, content_type: &str) -> anyhow::Result<()> {
+    async fn multipart_upload(
+        &self,
+        key: &str,
+        data: Bytes,
+        content_type: &str,
+    ) -> anyhow::Result<()> {
         use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 
-        let create = self.client
+        let create = self
+            .client
             .create_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
@@ -63,7 +80,8 @@ impl S3Store {
             .await
             .map_err(|e| anyhow::anyhow!("create multipart failed for {key}: {e}"))?;
 
-        let upload_id = create.upload_id()
+        let upload_id = create
+            .upload_id()
             .ok_or_else(|| anyhow::anyhow!("no upload_id returned for {key}"))?
             .to_string();
 
@@ -74,7 +92,8 @@ impl S3Store {
         while offset < data.len() {
             let end = (offset + self.part_size as usize).min(data.len());
             let chunk = data.slice(offset..end);
-            let resp = self.client
+            let resp = self
+                .client
                 .upload_part()
                 .bucket(&self.bucket)
                 .key(key)
@@ -95,14 +114,17 @@ impl S3Store {
                 }
                 Err(e) => {
                     // Best-effort abort to avoid orphaned multipart uploads
-                    let _ = self.client
+                    let _ = self
+                        .client
                         .abort_multipart_upload()
                         .bucket(&self.bucket)
                         .key(key)
                         .upload_id(&upload_id)
                         .send()
                         .await;
-                    return Err(anyhow::anyhow!("upload part {part_number} failed for {key}: {e}"));
+                    return Err(anyhow::anyhow!(
+                        "upload part {part_number} failed for {key}: {e}"
+                    ));
                 }
             }
 
@@ -110,7 +132,8 @@ impl S3Store {
             part_number += 1;
         }
 
-        let result = self.client
+        let result = self
+            .client
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
@@ -124,7 +147,8 @@ impl S3Store {
             .await;
 
         if let Err(e) = result {
-            let _ = self.client
+            let _ = self
+                .client
                 .abort_multipart_upload()
                 .bucket(&self.bucket)
                 .key(key)
@@ -139,9 +163,19 @@ impl S3Store {
 
     /// Returns None if the key does not exist.
     pub async fn get_object(&self, key: &str) -> anyhow::Result<Option<Bytes>> {
-        match self.client.get_object().bucket(&self.bucket).key(key).send().await {
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        {
             Ok(resp) => {
-                let data = resp.body.collect().await
+                let data = resp
+                    .body
+                    .collect()
+                    .await
                     .map_err(|e| anyhow::anyhow!("body collect failed: {e}"))?
                     .into_bytes();
                 Ok(Some(data))
@@ -182,14 +216,17 @@ impl S3Store {
         let mut keys = Vec::new();
         let mut continuation_token: Option<String> = None;
         loop {
-            let mut req = self.client
+            let mut req = self
+                .client
                 .list_objects_v2()
                 .bucket(&self.bucket)
                 .prefix(prefix);
             if let Some(token) = continuation_token.take() {
                 req = req.continuation_token(token);
             }
-            let resp = req.send().await
+            let resp = req
+                .send()
+                .await
                 .map_err(|e| anyhow::anyhow!("list_objects failed: {e}"))?;
             for obj in resp.contents() {
                 if let Some(k) = obj.key() {

@@ -1,3 +1,4 @@
+mod catalog;
 mod checkpoint;
 mod config;
 mod crawler;

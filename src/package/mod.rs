@@ -32,8 +32,14 @@ pub async fn run(cfg: Config, output: PathBuf, chunk_bytes: u64) -> anyhow::Resu
     seek_index.save(&index_path)?;
     info!("Seek index written to {:?}", index_path);
 
-    let total_shards =
-        crate::peer::shard::total_shards(cfg.storage.shard_size, cfg.storage.total_books);
+    let total_shards = if cfg.catalog.enabled {
+        let store = crate::storage::from_config(&cfg.storage).await?;
+        let manifest =
+            crate::catalog::CatalogManifest::load(&store, &cfg.catalog.manifest_key).await?;
+        manifest.total_shards
+    } else {
+        crate::peer::shard::total_shards(cfg.storage.shard_size, cfg.storage.total_books)
+    };
     let pkg_manifest = manifest::PackageManifest::build(
         &seek_index,
         records.len() as u64,

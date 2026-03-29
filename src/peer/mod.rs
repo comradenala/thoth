@@ -33,12 +33,19 @@ pub async fn print_status(cfg: &Config) -> anyhow::Result<()> {
     let identity = PeerIdentity::load_or_create(&cfg.peer.identity_path)?;
     println!("Peer ID: {}", identity.peer_id);
     let store = storage::from_config(&cfg.storage).await?;
+    let (registry_shard_size, registry_total_books) = if cfg.catalog.enabled {
+        let manifest =
+            crate::catalog::CatalogManifest::load(&store, &cfg.catalog.manifest_key).await?;
+        (1, manifest.total_shards)
+    } else {
+        (cfg.storage.shard_size, cfg.storage.total_books)
+    };
 
     let registry = ShardRegistry::new(
         &store,
         &identity.peer_id,
-        cfg.storage.shard_size,
-        cfg.storage.total_books,
+        registry_shard_size,
+        registry_total_books,
         cfg.crawler.claim_ttl_secs,
     );
     let claims = registry.list_claims().await?;

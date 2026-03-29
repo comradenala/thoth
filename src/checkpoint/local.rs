@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookRecord {
     pub book_id: u64,
+    #[serde(default)]
+    pub source_id: Option<String>,
     pub shard_id: u64,
     pub title: String,
     pub author: String,
-    pub format: String,        // "pdf" | "epub" | "html"
+    pub format: String, // "pdf" | "epub" | "html"
     pub s3_key: String,
     pub sha256: String,
     pub size_bytes: u64,
@@ -22,7 +24,9 @@ pub struct LocalCheckpoint {
 
 impl LocalCheckpoint {
     pub fn new(dir: &Path, shard_id: u64) -> Self {
-        Self { path: dir.join(format!("shard-{shard_id:010}.ndjson")) }
+        Self {
+            path: dir.join(format!("shard-{shard_id:010}.ndjson")),
+        }
     }
 
     /// Load all completed book IDs (for dedup on resume).
@@ -35,7 +39,9 @@ impl LocalCheckpoint {
         let mut ids = HashSet::new();
         for line in reader.lines() {
             let line = line?;
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(record) = serde_json::from_str::<BookRecord>(&line) {
                 ids.insert(record.book_id);
             }
@@ -68,7 +74,9 @@ impl LocalCheckpoint {
         let mut records = Vec::new();
         for line in reader.lines() {
             let line = line?;
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(r) = serde_json::from_str::<BookRecord>(&line) {
                 records.push(r);
             }
@@ -85,6 +93,7 @@ mod tests {
     fn sample(book_id: u64) -> BookRecord {
         BookRecord {
             book_id,
+            source_id: None,
             shard_id: 0,
             title: format!("Book {book_id}"),
             author: "Author".into(),
