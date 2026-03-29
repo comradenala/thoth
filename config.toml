@@ -1,8 +1,8 @@
 [peer]
-identity_path = "/var/lib/thoth/peer_id"
+identity_path = "/Users/jdbohrman/thoth/.state/peer_id"
 
 [storage]
-bucket = "open-books-archive"
+bucket = "thoth-catalog"
 endpoint_url = "https://99ccacd45bc5e29b03b4a6c140ed37a7.r2.cloudflarestorage.com"
 shard_size = 10000
 total_books = 40000000
@@ -15,17 +15,10 @@ book_url_template = "https://www.gutenburg.com/books/edition/{book}"
 shards_per_peer = 2
 concurrency = 4
 claim_ttl_secs = 3600
-checkpoint_dir = "/var/lib/thoth/checkpoints"
+checkpoint_dir = "/Users/jdbohrman/thoth/.state/checkpoints"
 use_spider = true
 
 [catalog]
-enabled = false
+enabled = true
 manifest_key = "catalog/gbooks/manifest.json"
 shard_prefix = "catalog/gbooks/shards"
-
-# Optional: only needed to enable torrent/IPFS publishing for `thoth package`.
-[package]
-generate_torrent = false
-tracker_url = "udp://tracker.opentrackr.org:1337/announce"
-pin_ipfs = false
-ipfs_api_url = "http://127.0.0.1:5001"

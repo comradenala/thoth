@@ -1,6 +1,8 @@
 use crate::storage::S3Store;
 use serde::{Deserialize, Serialize};
 
+const SHARD_MANIFEST_PREFIX: &str = "manifests/shards/";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardManifest {
     pub shard_id: u64,
@@ -13,7 +15,7 @@ pub struct ShardManifest {
 
 impl ShardManifest {
     fn s3_key(shard_id: u64) -> String {
-        format!("manifests/shards/shard-{shard_id:010}.json")
+        format!("{SHARD_MANIFEST_PREFIX}shard-{shard_id:010}.json")
     }
 }
 
@@ -39,5 +41,19 @@ impl<'a> RemoteCheckpoint<'a> {
         let key = ShardManifest::s3_key(manifest.shard_id);
         let data = bytes::Bytes::from(serde_json::to_vec(manifest)?);
         self.store.put_object(&key, data, "application/json").await
+    }
+
+    pub async fn list_shard_manifests(&self) -> anyhow::Result<Vec<ShardManifest>> {
+        let keys = self.store.list_keys(SHARD_MANIFEST_PREFIX).await?;
+        let mut out = Vec::new();
+        for key in keys {
+            let Some(data) = self.store.get_object(&key).await? else {
+                continue;
+            };
+            if let Ok(m) = serde_json::from_slice::<ShardManifest>(&data) {
+                out.push(m);
+            }
+        }
+        Ok(out)
     }
 }
