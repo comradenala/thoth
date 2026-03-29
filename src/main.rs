@@ -1,5 +1,4 @@
 mod config;
-mod error;
 mod storage;
 mod peer;
 mod checkpoint;
@@ -51,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Crawl => crawler::run(cfg).await?,
-        Commands::Status => peer::print_status(cfg).await?,
+        Commands::Status => peer::print_status(&cfg).await?,
         Commands::Package { output, chunk_mib } => {
             package::run(cfg, output, chunk_mib * 1024 * 1024).await?
         }

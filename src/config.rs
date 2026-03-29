@@ -45,7 +45,7 @@ pub struct CrawlerConfig {
     pub use_spider: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PackageConfig {
     #[serde(default)]
     pub generate_torrent: bool,
@@ -54,6 +54,17 @@ pub struct PackageConfig {
     pub pin_ipfs: bool,
     #[serde(default = "default_ipfs_api")]
     pub ipfs_api_url: String,
+}
+
+impl Default for PackageConfig {
+    fn default() -> Self {
+        Self {
+            generate_torrent: false,
+            tracker_url: None,
+            pin_ipfs: false,
+            ipfs_api_url: default_ipfs_api(),
+        }
+    }
 }
 
 fn default_shard_size() -> u64 { 10_000 }
@@ -68,7 +79,8 @@ fn default_ipfs_api() -> String { "http://127.0.0.1:5001".to_string() }
 
 impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read config {}: {e}", path.display()))?;
         let config: Config = toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
         Ok(config)
