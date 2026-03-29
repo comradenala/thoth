@@ -61,34 +61,56 @@ impl S3Store {
             .content_type(content_type)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("create multipart failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("create multipart failed for {key}: {e}"))?;
 
         let upload_id = create.upload_id()
-            .ok_or_else(|| anyhow::anyhow!("no upload_id returned"))?
+            .ok_or_else(|| anyhow::anyhow!("no upload_id returned for {key}"))?
             .to_string();
 
         let mut parts: Vec<CompletedPart> = Vec::new();
-        for (i, chunk) in data.chunks(self.part_size as usize).enumerate() {
-            let part_number = (i + 1) as i32;
+        let mut offset = 0usize;
+        let mut part_number = 1i32;
+
+        while offset < data.len() {
+            let end = (offset + self.part_size as usize).min(data.len());
+            let chunk = data.slice(offset..end);
             let resp = self.client
                 .upload_part()
                 .bucket(&self.bucket)
                 .key(key)
                 .upload_id(&upload_id)
                 .part_number(part_number)
-                .body(ByteStream::from(Bytes::copy_from_slice(chunk)))
+                .body(ByteStream::from(chunk))
                 .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("upload part {part_number} failed: {e}"))?;
-            parts.push(
-                CompletedPart::builder()
-                    .part_number(part_number)
-                    .e_tag(resp.e_tag().unwrap_or_default())
-                    .build(),
-            );
+                .await;
+
+            match resp {
+                Ok(r) => {
+                    parts.push(
+                        CompletedPart::builder()
+                            .part_number(part_number)
+                            .e_tag(r.e_tag().unwrap_or_default())
+                            .build(),
+                    );
+                }
+                Err(e) => {
+                    // Best-effort abort to avoid orphaned multipart uploads
+                    let _ = self.client
+                        .abort_multipart_upload()
+                        .bucket(&self.bucket)
+                        .key(key)
+                        .upload_id(&upload_id)
+                        .send()
+                        .await;
+                    return Err(anyhow::anyhow!("upload part {part_number} failed for {key}: {e}"));
+                }
+            }
+
+            offset = end;
+            part_number += 1;
         }
 
-        self.client
+        let result = self.client
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
@@ -99,8 +121,19 @@ impl S3Store {
                     .build(),
             )
             .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("complete multipart failed: {e}"))?;
+            .await;
+
+        if let Err(e) = result {
+            let _ = self.client
+                .abort_multipart_upload()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .send()
+                .await;
+            return Err(anyhow::anyhow!("complete multipart failed for {key}: {e}"));
+        }
+
         Ok(())
     }
 
