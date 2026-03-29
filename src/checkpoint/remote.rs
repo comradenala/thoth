@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::storage::S3Store;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShardManifest {
@@ -11,9 +11,33 @@ pub struct ShardManifest {
     pub last_updated_unix: u64,
 }
 
-pub struct RemoteCheckpoint<'a> { _store: &'a S3Store }
+impl ShardManifest {
+    fn s3_key(shard_id: u64) -> String {
+        format!("manifests/shards/shard-{shard_id:010}.json")
+    }
+}
+
+pub struct RemoteCheckpoint<'a> {
+    store: &'a S3Store,
+}
+
 impl<'a> RemoteCheckpoint<'a> {
-    pub fn new(store: &'a S3Store) -> Self { Self { _store: store } }
-    pub async fn save(&self, _m: &ShardManifest) -> anyhow::Result<()> { unimplemented!() }
-    pub async fn load(&self, _shard_id: u64) -> anyhow::Result<Option<ShardManifest>> { unimplemented!() }
+    pub fn new(store: &'a S3Store) -> Self {
+        Self { store }
+    }
+
+    pub async fn load(&self, shard_id: u64) -> anyhow::Result<Option<ShardManifest>> {
+        let key = ShardManifest::s3_key(shard_id);
+        if let Some(data) = self.store.get_object(&key).await? {
+            Ok(Some(serde_json::from_slice(&data)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn save(&self, manifest: &ShardManifest) -> anyhow::Result<()> {
+        let key = ShardManifest::s3_key(manifest.shard_id);
+        let data = bytes::Bytes::from(serde_json::to_vec(manifest)?);
+        self.store.put_object(&key, data, "application/json").await
+    }
 }
